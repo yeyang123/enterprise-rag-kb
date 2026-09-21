@@ -4,7 +4,9 @@ text[i:i+chunk_size] 纯位置切片——今天故意保留它的缺陷，
 亲眼观察句子被拦腰切断的 badcase，D4 用句边界 + overlap 修复。
 复用 Day2 的 load_document() 拿清洗后的分页文本。
 """
+import re
 from rag.loader import load_document
+
 
 def naive_chunk(text: str, chunk_size: int = 500) -> list[str]:
     """
@@ -19,6 +21,51 @@ def naive_chunk(text: str, chunk_size: int = 500) -> list[str]:
         return []
     # range(0, len, step) 生成每个切块的起点：0, 500, 1000, ...
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+def split_sentences(text: str) -> list[str]:
+    """
+    按句末标点切句，标点保留在句尾。
+    (?<=...) 是"后行断言"：在标点【之后】下刀，标点归前一句。
+    """
+    parts = re.split(r"(?<=[。！？；!?;…])", text)
+    return [s for s in (p.strip() for p in parts) if s]
+
+def overlap_chunk(text: str, chunk_size: int = 500, overlap: int = 80) -> list[str]:
+    """
+    句边界 + 重叠分块：句子装箱，封箱时把上一箱末尾约 overlap 字的句子
+    复制进下一箱开头。
+    """
+    sents = split_sentences(text)
+    chunks, cur, cur_len = [], [], 0
+
+    for s in sents:
+        # 极端情况：单句比 chunk_size 还长（如目录页的 ......... 长串）
+        # 没有任何句边界可用，只能硬切——这就是为什么保留这个分支
+        while len(s) > chunk_size:
+            if cur:
+                chunks.append("".join(cur)); cur, cur_len = [], 0
+            chunks.append(s[:chunk_size])
+            s = s[chunk_size:]
+
+        # 装不下当前句且箱子里已有内容 -> 封箱，并构造 overlap
+        if cur and cur_len + len(s) > chunk_size:
+            chunks.append("".join(cur))
+            tail, t_len = [], 0
+            # 从上一箱末尾【整句整句】往回收，凑够约 overlap 字
+            # 注意收的是完整句子，不是字符——保证 overlap 区也不破坏句子
+            for prev in reversed(cur):
+                if t_len >= overlap:
+                    break
+                tail.insert(0, prev)
+                t_len += len(prev)
+            cur, cur_len = tail, t_len   # 新箱 = 上一箱的尾部句子 + 后续新句子
+
+        cur.append(s)
+        cur_len += len(s)
+
+    if cur:
+        chunks.append("".join(cur))
+    return chunks
 
 def chunk_document(doc: dict, chunk_size: int = 500) -> list[dict]:
     """
@@ -36,7 +83,7 @@ def chunk_document(doc: dict, chunk_size: int = 500) -> list[dict]:
         page_marks.extend([p["page"]] * (len(t) + 1))
 
     chunks = []
-    for i, text in enumerate(naive_chunk(full_text, chunk_size)):
+    for i, text in enumerate(overlap_chunk(full_text, chunk_size)):
         start = i * chunk_size                       # 该块起点在 full_text 里的位置
         end = start + len(text) - 1
         pages = sorted({m for m in page_marks[start:end] if m is not None})
