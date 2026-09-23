@@ -30,41 +30,44 @@ def split_sentences(text: str) -> list[str]:
     parts = re.split(r"(?<=[。！？；!?;…])", text)
     return [s for s in (p.strip() for p in parts) if s]
 
-def overlap_chunk(text: str, chunk_size: int = 500, overlap: int = 80) -> list[str]:
-    """
-    句边界 + 重叠分块：句子装箱，封箱时把上一箱末尾约 overlap 字的句子
-    复制进下一箱开头。
-    """
+def overlap_chunk(text: str, chunk_size: int = 500, overlap: int = 80) -> list[tuple]:
+    """句边界+重叠切块。返回 [(chunk文本, 在原文的起点, 终点), ...]
+    位置信息在切块时一并记录——overlap 会让位置非线性，事后无法靠乘法推算。"""
     sents = split_sentences(text)
     chunks, cur, cur_len = [], [], 0
+    # pos：句子在原文中的定位游标，用 find(..., pos) 顺序搜索（允许句子重复出现）
+    pos = 0
+
+    def locate(s):
+        nonlocal pos
+        idx = text.find(s, pos)
+        pos = idx + len(s)
+        return idx
 
     for s in sents:
-        # 极端情况：单句比 chunk_size 还长（如目录页的 ......... 长串）
-        # 没有任何句边界可用，只能硬切——这就是为什么保留这个分支
-        while len(s) > chunk_size:
+        s_start = locate(s)
+        while len(s) > chunk_size:   # 超长句硬切，同时记录位置
             if cur:
-                chunks.append("".join(cur)); cur, cur_len = [], 0
-            chunks.append(s[:chunk_size])
-            s = s[chunk_size:]
+                chunks.append(("".join(t[0] for t in cur), cur[0][1], cur[-1][2]))
+                cur, cur_len = [], 0
+            chunks.append((s[:chunk_size], s_start, s_start + chunk_size))
+            s, s_start = s[chunk_size:], s_start + chunk_size
 
-        # 装不下当前句且箱子里已有内容 -> 封箱，并构造 overlap
         if cur and cur_len + len(s) > chunk_size:
-            chunks.append("".join(cur))
+            chunks.append(("".join(t[0] for t in cur), cur[0][1], cur[-1][2]))
             tail, t_len = [], 0
-            # 从上一箱末尾【整句整句】往回收，凑够约 overlap 字
-            # 注意收的是完整句子，不是字符——保证 overlap 区也不破坏句子
             for prev in reversed(cur):
                 if t_len >= overlap:
                     break
                 tail.insert(0, prev)
-                t_len += len(prev)
-            cur, cur_len = tail, t_len   # 新箱 = 上一箱的尾部句子 + 后续新句子
+                t_len += len(prev[0])
+            cur, cur_len = tail, t_len
 
-        cur.append(s)
+        cur.append((s, s_start, s_start + len(s)))
         cur_len += len(s)
 
     if cur:
-        chunks.append("".join(cur))
+        chunks.append(("".join(t[0] for t in cur), cur[0][1], cur[-1][2]))
     return chunks
 
 def chunk_document(doc: dict, chunk_size: int = 500) -> list[dict]:
@@ -83,15 +86,17 @@ def chunk_document(doc: dict, chunk_size: int = 500) -> list[dict]:
         page_marks.extend([p["page"]] * (len(t) + 1))
 
     chunks = []
-    for i, text in enumerate(overlap_chunk(full_text, chunk_size)):
-        start = i * chunk_size                       # 该块起点在 full_text 里的位置
-        end = start + len(text) - 1
+    for i, (text, start, end) in enumerate(overlap_chunk(full_text, chunk_size)):
         pages = sorted({m for m in page_marks[start:end] if m is not None})
         chunks.append({
+            "chunk_id": f"{doc['source']}#chunk-{i:04d}",
+            "index": i,
             "text": text,
             "source": doc["source"],
-            "page_start": pages[0] if pages else None,
+            "pages": pages,                                   # 精确页码列表
+            "page_start": pages[0] if pages else None,        # 保留便捷字段
             "page_end": pages[-1] if pages else None,
+            "char_count": len(text),
         })
     return chunks
 
@@ -109,7 +114,7 @@ if __name__ == "__main__":
     # 开头大概率是半句话，结尾大概率切在句子中间
     for c in chunks[:5]:
         print(f"===== chunk {c['chunk_id'] if 'chunk_id' in c else chunks.index(c)}"
-              f"（第 {c['page_start']}-{c['page_end']} 页，{len(c['text'])} 字）=====")
+              f"（第 {c['pages']} 页，{len(c['text'])} 字）=====")
         print(f"[开头] {c['text'][:60]}")
         print(f"[结尾] {c['text'][-60:]}")
         print()

@@ -56,6 +56,24 @@ def clean_page_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)  # 连续空行最多保留一个
     return text.strip()
 
+# 目录条目特征：一堆点线（4个以上）结尾跟页码数字
+_TOC_PATTERN = re.compile(r"[.．·…]{4,}\s*\d{1,4}\s*$")
+
+def strip_toc_lines(text: str) -> str:
+    """删除目录行。点线目录不是正文，留着会污染切块和后续向量检索。"""
+    kept = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            kept.append(line)
+            continue
+        # 规则1：点线+页码结尾；规则2：点线字符占比超 30%
+        dot_ratio = len(re.findall(r"[.．·…]", stripped)) / len(stripped)
+        if _TOC_PATTERN.search(stripped) or dot_ratio > 0.3:
+            continue   # 命中目录特征，整行丢弃
+        kept.append(line)
+    return "\n".join(kept)
+
 def find_repeated_lines(pages_text: list[str], min_ratio: float = 0.7) -> set[str]:
     """
     识别页眉页脚：在足够多页面里【逐字相同】的行。
@@ -103,6 +121,7 @@ def extract_pdf_text(path: str) -> list[dict]:
     # 顺序不能反：先清洗单页，再跨页找重复行
     for p in raw_pages:
         p["text"] = clean_page_text(p["text"])
+        p["text"] = strip_toc_lines(p["text"])   # 新增：目录行过滤（在清洗之后、页眉识别之前）
 
     repeated = find_repeated_lines([p["text"] for p in raw_pages])
     if repeated:
