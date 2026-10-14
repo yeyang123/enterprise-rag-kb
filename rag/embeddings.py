@@ -80,3 +80,9 @@ if __name__ == "__main__":
     vecs = client.embed_texts(texts)
     print(f"后端: {client.backend} | 向量数: {len(vecs)} | 维度: {len(vecs[0])}")
     print("第一句前 5 维:", [round(x, 4) for x in vecs[0][:5]])
+
+    import numpy as np
+    a, b, c = [np.array(v) for v in vecs]          # 转成 numpy 方便点积
+    print(f"同义句(A-B)相似度: {a @ b:.4f}")         # 应 >> 0.5
+    print(f"无关句(A-C)相似度: {a @ c:.4f}")         # 应 ≈ 0 甚至负数
+    print(f"无关句(B-C)相似度: {b @ c:.4f}")
